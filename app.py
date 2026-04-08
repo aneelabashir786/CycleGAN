@@ -23,6 +23,7 @@ import io
 import requests
 from pathlib import Path
 import warnings
+import re
 warnings.filterwarnings('ignore')
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -109,6 +110,19 @@ class ResNetGen(nn.Module):
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Helper function to remove DataParallel wrapper
+# ────────────────────────────────────────────────────────────────────────────
+def remove_dataparallel(state_dict):
+    """Remove 'module.' prefix from DataParallel state dict keys"""
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        # Remove 'module.' if present
+        new_key = re.sub(r'^module\.', '', key)
+        new_state_dict[new_key] = value
+    return new_state_dict
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # Download model from Hugging Face
 # ────────────────────────────────────────────────────────────────────────────
 @st.cache_resource
@@ -134,8 +148,15 @@ def download_model(url):
             progress_bar.progress(1.0)
             temp_file.seek(0)
             
-            # Load with appropriate map location
-            return torch.load(temp_file, map_location=DEVICE)
+            # Load the state dict
+            state_dict = torch.load(temp_file, map_location=DEVICE)
+            
+            # Remove DataParallel wrapper if present
+            if any(key.startswith('module.') for key in state_dict.keys()):
+                st.info("Detected DataParallel format, converting...")
+                state_dict = remove_dataparallel(state_dict)
+            
+            return state_dict
     except Exception as e:
         st.error(f"Failed to download model: {str(e)}")
         return None
@@ -158,9 +179,19 @@ def load_models():
             st.error("Failed to load models. Please check your internet connection.")
             return None, None
         
-        # Load weights
-        G_AB.load_state_dict(weights_ab)
-        G_BA.load_state_dict(weights_ba)
+        # Load weights with strict=False to handle minor mismatches
+        try:
+            missing_keys_ab, unexpected_keys_ab = G_AB.load_state_dict(weights_ab, strict=False)
+            missing_keys_ba, unexpected_keys_ba = G_BA.load_state_dict(weights_ba, strict=False)
+            
+            if missing_keys_ab:
+                st.warning(f"G_AB missing keys: {missing_keys_ab[:3]}...")
+            if unexpected_keys_ab:
+                st.warning(f"G_AB unexpected keys: {unexpected_keys_ab[:3]}...")
+                
+        except Exception as e:
+            st.error(f"Error loading state dict: {str(e)}")
+            return None, None
         
         # Set to evaluation mode
         G_AB.eval()
@@ -243,6 +274,9 @@ st.markdown("""
         transform: translateY(-2px);
         box-shadow: 0 4px 12px rgba(0,0,0,0.2);
     }
+    .stAlert {
+        border-radius: 8px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -258,8 +292,36 @@ st.markdown("""
 G_AB, G_BA = load_models()
 
 if G_AB is None or G_BA is None:
-    st.error("Failed to load models. Please refresh the page or try again later.")
+    st.error("""
+    ### Failed to load models
+    
+    Possible reasons:
+    1. Internet connection issue
+    2. Model files not found on Hugging Face
+    3. Model architecture mismatch
+    
+    Please check the logs or try again later.
+    """)
     st.stop()
+
+# Sidebar info
+with st.sidebar:
+    st.header("ℹ️ Model Info")
+    st.markdown(f"""
+    - **Device**: {DEVICE}
+    - **Image Size**: {IMG_SIZE}×{IMG_SIZE}
+    - **Generator**: ResNet (6 blocks)
+    - **Checkpoint**: Epoch 60
+    """)
+    
+    st.markdown("---")
+    st.header("🎯 Tips")
+    st.info("""
+    - Use clear, well-lit images
+    - Center the subject
+    - Sketches should have good contrast
+    - Photos should be properly exposed
+    """)
 
 # Main content - Two tabs for different translations
 tab1, tab2 = st.tabs(["✏️ Sketch → Photo", "📸 Photo → Sketch"])
@@ -356,5 +418,6 @@ st.markdown("""
     <div style='text-align: center; color: gray; padding: 20px;'>
     <p>🎨 Built with CycleGAN | ResNet Generator | PatchGAN Discriminator</p>
     <p>🚀 Models hosted on <a href="https://huggingface.co/aneelaBashir22f3414/CycleGAN">Hugging Face</a></p>
+    <p>📚 Unpaired Image-to-Image Translation using Cycle Consistency Loss</p>
     </div>
 """, unsafe_allow_html=True)

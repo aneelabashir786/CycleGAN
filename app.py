@@ -4,6 +4,16 @@
 # ────────────────────────────────────────────────────────────────────────────
 
 import streamlit as st
+
+# Set page config must be the first Streamlit command
+st.set_page_config(
+    page_title="CycleGAN - Sketch to Photo Translation",
+    page_icon="🎨",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Now import other libraries
 import torch
 import torch.nn as nn
 from torchvision import transforms
@@ -12,12 +22,21 @@ import numpy as np
 import io
 import requests
 from pathlib import Path
+import warnings
+warnings.filterwarnings('ignore')
 
 # ────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ────────────────────────────────────────────────────────────────────────────
 IMG_SIZE = 128
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# Check device
+if torch.cuda.is_available():
+    DEVICE = torch.device('cuda')
+    st.sidebar.success("✅ GPU is available")
+else:
+    DEVICE = torch.device('cpu')
+    st.sidebar.info("ℹ️ Using CPU (inference will be slower)")
 
 # Hugging Face model URLs
 MODEL_URLS = {
@@ -96,18 +115,29 @@ class ResNetGen(nn.Module):
 def download_model(url):
     """Download model weights from Hugging Face"""
     try:
-        response = requests.get(url, stream=True)
-        response.raise_for_status()
-        
-        # Create a temporary file
-        temp_file = io.BytesIO()
-        for chunk in response.iter_content(chunk_size=8192):
-            temp_file.write(chunk)
-        temp_file.seek(0)
-        
-        return torch.load(temp_file, map_location=DEVICE)
+        with st.spinner(f"Downloading model from Hugging Face..."):
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            
+            # Create a temporary file
+            temp_file = io.BytesIO()
+            total_size = int(response.headers.get('content-length', 0))
+            progress_bar = st.progress(0)
+            
+            downloaded = 0
+            for chunk in response.iter_content(chunk_size=8192):
+                temp_file.write(chunk)
+                downloaded += len(chunk)
+                if total_size > 0:
+                    progress_bar.progress(min(1.0, downloaded / total_size))
+            
+            progress_bar.progress(1.0)
+            temp_file.seek(0)
+            
+            # Load with appropriate map location
+            return torch.load(temp_file, map_location=DEVICE)
     except Exception as e:
-        st.error(f"Failed to download model from {url}: {str(e)}")
+        st.error(f"Failed to download model: {str(e)}")
         return None
 
 
@@ -115,7 +145,7 @@ def download_model(url):
 def load_models():
     """Load both generators from Hugging Face"""
     
-    with st.spinner("📥 Downloading models from Hugging Face..."):
+    with st.spinner("📥 Loading models from Hugging Face..."):
         # Initialize models
         G_AB = ResNetGen().to(DEVICE)
         G_BA = ResNetGen().to(DEVICE)
@@ -192,14 +222,8 @@ def photo_to_sketch(G_BA, photo_image):
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Streamlit UI
+# Main UI
 # ────────────────────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="CycleGAN - Sketch to Photo Translation",
-    page_icon="🎨",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
 
 # Custom CSS for better styling
 st.markdown("""
@@ -219,17 +243,6 @@ st.markdown("""
         transform: translateY(-2px);
         box-shadow: 0 4px 12px rgba(0,0,0,0.2);
     }
-    .success-text {
-        color: #28a745;
-        font-weight: bold;
-    }
-    .info-box {
-        background-color: #e3f2fd;
-        padding: 20px;
-        border-radius: 10px;
-        border-left: 5px solid #2196f3;
-        margin: 10px 0;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -240,43 +253,6 @@ st.markdown("""
     Transform <b>Sketches to Photos</b> and <b>Photos to Sketches</b> using CycleGAN
     </p>
 """, unsafe_allow_html=True)
-
-# Sidebar
-with st.sidebar:
-    st.header("⚙️ Model Information")
-    st.markdown("---")
-    
-    # Model info
-    st.markdown("""
-    ### 🧠 Architecture
-    - **Type**: CycleGAN
-    - **Generator**: ResNet (6 blocks)
-    - **Discriminator**: PatchGAN
-    - **Image Size**: 128×128
-    
-    ### 📊 Loss Functions
-    - Adversarial Loss (LSGAN)
-    - Cycle Consistency Loss (λ=10)
-    - Identity Loss (λ=5)
-    
-    ### 🎯 Capabilities
-    - ✏️ Sketch → Photo
-    - 📸 Photo → Sketch
-    - 🔄 Cycle Consistency
-    
-    ### 📦 Model Source
-    [Hugging Face Hub](https://huggingface.co/aneelaBashir22f3414/CycleGAN)
-    """)
-    
-    st.markdown("---")
-    st.markdown("### 💡 Tips for Best Results")
-    st.info("""
-    - Use clear, well-lit images
-    - Center the subject in frame
-    - Sketches should have good contrast
-    - Photos should be properly exposed
-    - Best with objects (not complex scenes)
-    """)
 
 # Load models
 G_AB, G_BA = load_models()
@@ -374,33 +350,11 @@ with tab2:
         else:
             st.info("👈 Upload a photo to begin translation")
 
-# Example section
-with st.expander("🎯 View Examples", expanded=False):
-    st.markdown("""
-    ### How to get best results:
-    
-    1. **For Sketches**:
-       - Use black and white line drawings
-       - Ensure good contrast
-       - Simple objects work best
-       
-    2. **For Photos**:
-       - Use well-lit images
-       - Center the main object
-       - Avoid cluttered backgrounds
-       
-    3. **Common Issues**:
-       - Blurry outputs → Try sharper input
-       - Wrong colors → Input may be too complex
-       - Poor reconstruction → Subject might be unusual
-    """)
-
 # Footer
 st.markdown("---")
 st.markdown("""
     <div style='text-align: center; color: gray; padding: 20px;'>
     <p>🎨 Built with CycleGAN | ResNet Generator | PatchGAN Discriminator</p>
-    <p>📚 Unpaired Image-to-Image Translation using Cycle Consistency Loss</p>
-    <p>🚀 Deployed on Streamlit Cloud | Models hosted on Hugging Face</p>
+    <p>🚀 Models hosted on <a href="https://huggingface.co/aneelaBashir22f3414/CycleGAN">Hugging Face</a></p>
     </div>
 """, unsafe_allow_html=True)
